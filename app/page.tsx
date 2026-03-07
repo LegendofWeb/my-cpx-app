@@ -248,6 +248,17 @@ export default function Home() {
 
       setTranscript(data.text || "(텍스트 없음)");
       log("전사 완료");
+
+      const speakerRes = await fetch("/api/speaker", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ text: data.text }),
+});
+
+const speakerData = await speakerRes.json();
+
+console.log("speaker result:", speakerData);
+      
     } catch (error) {
       console.error(error);
       setTranscript("전사 중 오류가 발생했습니다.");
