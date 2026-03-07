@@ -5,6 +5,26 @@ import { createReadStream } from "fs";
 import path from "path";
 import os from "os";
 
+function guessExtension(file: File) {
+  const name =
+    typeof file.name === "string" && file.name.trim() ? file.name.trim() : "";
+
+  if (name.includes(".")) {
+    const ext = name.split(".").pop()?.toLowerCase();
+    if (ext) return ext;
+  }
+
+  const type = file.type.toLowerCase();
+
+  if (type.includes("mp4") || type.includes("m4a")) return "mp4";
+  if (type.includes("webm")) return "webm";
+  if (type.includes("ogg")) return "ogg";
+  if (type.includes("mpeg") || type.includes("mp3")) return "mp3";
+  if (type.includes("wav")) return "wav";
+
+  return "webm";
+}
+
 export async function POST(req: NextRequest) {
   let tempPath = "";
 
@@ -30,16 +50,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
-  const bytes = Buffer.from(await file.arrayBuffer());
+    const bytes = Buffer.from(await file.arrayBuffer());
 
-const originalName =
-  typeof file.name === "string" && file.name.trim()
-    ? file.name.trim()
-    : "recording.webm";
+    if (!bytes.length) {
+      return NextResponse.json(
+        { error: "업로드된 오디오 파일이 비어 있습니다." },
+        { status: 400 }
+      );
+    }
 
-const safeName = originalName.replace(/[^\w.\-]/g, "_");
-
-tempPath = path.join(os.tmpdir(), `${Date.now()}-${safeName}`);
+    const ext = guessExtension(file);
+    const safeName = `recording-${Date.now()}.${ext}`;
+    tempPath = path.join(os.tmpdir(), safeName);
 
     await writeFile(tempPath, bytes);
 
@@ -53,10 +75,13 @@ tempPath = path.join(os.tmpdir(), `${Date.now()}-${safeName}`);
     });
   } catch (error) {
     console.error("Transcription error:", error);
-    return NextResponse.json(
-      { error: "전사 처리 중 오류가 발생했습니다." },
-      { status: 500 }
-    );
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : "전사 처리 중 오류가 발생했습니다.";
+
+    return NextResponse.json({ error: message }, { status: 500 });
   } finally {
     if (tempPath) {
       try {
