@@ -43,6 +43,8 @@ export default function Home() {
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const audioUrlRef = useRef<string | null>(null);
 
+  const CHUNK_MS = 60_000;
+
   function log(message: string) {
     const now = new Date().toLocaleTimeString("ko-KR");
     setLogText((prev) =>
@@ -161,14 +163,20 @@ export default function Home() {
       chunksRef.current = [];
 
       const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream);
+        ? new MediaRecorder(stream, {
+            mimeType,
+            audioBitsPerSecond: 24000,
+          })
+        : new MediaRecorder(stream, {
+            audioBitsPerSecond: 24000,
+          });
 
       recorderRef.current = recorder;
 
       recorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
           chunksRef.current.push(event.data);
+          log(`청크 저장 완료 (${chunksRef.current.length}개)`);
         }
       };
 
@@ -180,18 +188,18 @@ export default function Home() {
 
       recorder.onstop = async () => {
         try {
-          const blob = new Blob(chunksRef.current, {
+          const fullBlob = new Blob(chunksRef.current, {
             type: recorder.mimeType || "audio/webm",
           });
 
-          if (blob.size === 0) {
+          if (fullBlob.size === 0) {
             setTranscript("녹음 파일이 비어 있습니다.");
             log("녹음 종료. 파일 크기: 0 KB");
             setRecordStatus("정지");
             return;
           }
 
-          const url = URL.createObjectURL(blob);
+          const url = URL.createObjectURL(fullBlob);
           audioUrlRef.current = url;
 
           if (playerRef.current) {
@@ -199,9 +207,11 @@ export default function Home() {
           }
 
           setRecordStatus("정지");
-          log(`녹음 종료. 파일 크기: ${Math.round(blob.size / 1024)} KB`);
+          log(
+            `녹음 종료. 전체 파일 크기: ${Math.round(fullBlob.size / 1024)} KB, 청크 수: ${chunksRef.current.length}개`
+          );
 
-          await uploadForAnalysis(blob);
+          await uploadForAnalysis();
         } catch (error) {
           console.error(error);
           setTranscript("녹음 종료 후 처리 중 오류가 발생했습니다.");
@@ -215,9 +225,9 @@ export default function Home() {
         }
       };
 
-      recorder.start(1000);
+      recorder.start(CHUNK_MS);
       setRecordStatus("녹음 중");
-      log("녹음 시작");
+      log("녹음 시작 (1분 단위 청크 저장)");
       startCountdown();
     } catch (error) {
       console.error(error);
@@ -277,7 +287,56 @@ export default function Home() {
     setLogText("로그가 여기에 표시됩니다.");
   }
 
-  async function uploadForAnalysis(blob: Blob) {
+  async function transcribeSingleChunk(chunk: Blob, index: number, total: number) {
+    const formData = new FormData();
+    const ext = chunk.type.includes("mp4") ? "mp4" : "webm";
+    formData.append("file", chunk, `recording-part-${index + 1}.${ext}`);
+
+    log(`전사 청크 ${index + 1}/${total} 업로드 시작`);
+
+    const response = await fetch("/api/transcribe", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data?.error || `전사 실패 (청크 ${index + 1}/${total})`
+      );
+    }
+
+    const text =
+      typeof data?.text === "string" && data.text.trim()
+        ? data.text.trim()
+        : "";
+
+    log(`전사 청크 ${index + 1}/${total} 완료`);
+    return text;
+  }
+
+  async function transcribeAllChunks() {
+    const chunkList = chunksRef.current.filter((chunk) => chunk.size > 0);
+
+    if (chunkList.length === 0) {
+      throw new Error("전사할 청크가 없습니다.");
+    }
+
+    const results: string[] = [];
+
+    for (let i = 0; i < chunkList.length; i += 1) {
+      setTranscript(`전사 중... (${i + 1}/${chunkList.length})`);
+      const text = await transcribeSingleChunk(chunkList[i], i, chunkList.length);
+      if (text) {
+        results.push(text);
+      }
+    }
+
+    return results.join("\n").trim();
+  }
+
+  async function uploadForAnalysis() {
     try {
       setIsTranscribing(true);
       setIsSeparating(false);
@@ -288,27 +347,11 @@ export default function Home() {
       setGradeResult(null);
       setGradeError("");
 
-      const formData = new FormData();
-      formData.append("file", blob, "recording.webm");
+      const transcriptText = await transcribeAllChunks();
 
-      const transcribeRes = await fetch("/api/transcribe", {
-        method: "POST",
-        body: formData,
-      });
-
-      const transcribeData = await transcribeRes.json();
-
-      if (!transcribeRes.ok) {
-        throw new Error(transcribeData?.error || "전사 실패");
-      }
-
-      const transcriptText =
-        typeof transcribeData?.text === "string" && transcribeData.text.trim()
-          ? transcribeData.text
-          : "(텍스트 없음)";
-
-      setTranscript(transcriptText);
-      log("전사 완료");
+      const finalTranscript = transcriptText || "(텍스트 없음)";
+      setTranscript(finalTranscript);
+      log("전체 전사 완료");
       setIsTranscribing(false);
 
       let mergedText = "";
@@ -320,7 +363,7 @@ export default function Home() {
         const speakerRes = await fetch("/api/speaker", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: transcriptText }),
+          body: JSON.stringify({ text: finalTranscript }),
         });
 
         const speakerData = await speakerRes.json();
@@ -448,15 +491,15 @@ export default function Home() {
             marginBottom: 8,
           }}
         >
-          4차 테스트 버전
+          5차 테스트 버전
         </div>
 
         <h1 style={{ margin: "0 0 8px", fontSize: 28 }}>
           CPX 음성 전사 + 화자 분리 + AI 채점
         </h1>
         <p style={{ margin: "0 0 20px", color: "#4b5563", lineHeight: 1.6 }}>
-          ON을 누르면 녹음을 시작하고, STOP 후 전사 → 화자 분리 → AI 채점을
-          순서대로 진행합니다.
+          ON을 누르면 녹음을 시작하고, STOP 후 1분 단위로 전사한 뒤 화자 분리와
+          AI 채점을 진행합니다.
         </p>
 
         <div
@@ -473,6 +516,7 @@ export default function Home() {
           <div>전사 상태: {isTranscribing ? "진행 중" : "대기"}</div>
           <div>화자 분리 상태: {isSeparating ? "진행 중" : "대기"}</div>
           <div>AI 채점 상태: {isGrading ? "진행 중" : "대기"}</div>
+          <div>저장된 청크 수: {chunksRef.current.length}개</div>
         </div>
 
         <div
@@ -560,7 +604,7 @@ export default function Home() {
             borderRadius: 14,
             background: "#111827",
             color: "#f9fafb",
-            minHeight: 160,
+            minHeight: 180,
             whiteSpace: "pre-wrap",
             lineHeight: 1.5,
             fontSize: 14,
@@ -583,7 +627,7 @@ export default function Home() {
         >
           <div style={{ fontWeight: 700, marginBottom: 8 }}>전사 결과</div>
           {isTranscribing
-            ? "전사 중..."
+            ? transcript || "전사 중..."
             : transcript || "여기에 전사 결과가 표시됩니다."}
         </div>
 
