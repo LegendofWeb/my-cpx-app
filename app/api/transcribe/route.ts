@@ -30,9 +30,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const bytes = Buffer.from(await file.arrayBuffer());
-    const safeName = file.name?.endsWith(".webm") ? file.name : "recording.webm";
-    tempPath = path.join(os.tmpdir(), `${Date.now()}-${safeName}`);
+  const bytes = Buffer.from(await file.arrayBuffer());
+
+const originalName =
+  typeof file.name === "string" && file.name.trim()
+    ? file.name.trim()
+    : "recording.webm";
+
+const safeName = originalName.replace(/[^\w.\-]/g, "_");
+
+tempPath = path.join(os.tmpdir(), `${Date.now()}-${safeName}`);
 
     await writeFile(tempPath, bytes);
 
