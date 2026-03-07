@@ -38,12 +38,15 @@ export default function Home() {
 
   const streamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const currentChunkPartsRef = useRef<Blob[]>([]);
+  const segmentBlobsRef = useRef<Blob[]>([]);
   const playerRef = useRef<HTMLAudioElement | null>(null);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const segmentTimerRef = useRef<NodeJS.Timeout | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  const isStoppingAllRef = useRef(false);
 
-  const CHUNK_MS = 60_000;
+  const SEGMENT_MS = 60_000;
 
   function log(message: string) {
     const now = new Date().toLocaleTimeString("ko-KR");
@@ -60,11 +63,23 @@ export default function Home() {
     return `${min}:${sec}`;
   }
 
-  function clearTimer() {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
+  function clearCountdownTimer() {
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
     }
+  }
+
+  function clearSegmentTimer() {
+    if (segmentTimerRef.current) {
+      clearTimeout(segmentTimerRef.current);
+      segmentTimerRef.current = null;
+    }
+  }
+
+  function clearAllTimers() {
+    clearCountdownTimer();
+    clearSegmentTimer();
   }
 
   async function getMicrophone() {
@@ -114,12 +129,12 @@ export default function Home() {
   }
 
   function startCountdown() {
-    clearTimer();
+    clearCountdownTimer();
 
-    timerRef.current = setInterval(() => {
+    countdownTimerRef.current = setInterval(() => {
       setRemainingSeconds((prev) => {
         if (prev <= 1) {
-          clearTimer();
+          clearAllTimers();
           log("12분 종료 → 자동 정지");
           stopRecording();
           return 0;
@@ -127,6 +142,95 @@ export default function Home() {
         return prev - 1;
       });
     }, 1000);
+  }
+
+  async function startSegmentRecorder(stream: MediaStream) {
+    const mimeType = pickMimeType();
+    currentChunkPartsRef.current = [];
+
+    const recorder = mimeType
+      ? new MediaRecorder(stream, {
+          mimeType,
+          audioBitsPerSecond: 24000,
+        })
+      : new MediaRecorder(stream, {
+          audioBitsPerSecond: 24000,
+        });
+
+    recorderRef.current = recorder;
+
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        currentChunkPartsRef.current.push(event.data);
+      }
+    };
+
+    recorder.onerror = (event) => {
+      console.error("Recorder error:", event);
+      setRecordStatus("오류");
+      log("녹음 중 오류 발생");
+    };
+
+    recorder.onstop = async () => {
+      try {
+        const chunkBlob = new Blob(currentChunkPartsRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
+
+        if (chunkBlob.size > 0) {
+          segmentBlobsRef.current.push(chunkBlob);
+          log(
+            `세그먼트 저장 완료 (${segmentBlobsRef.current.length}개, ${Math.round(
+              chunkBlob.size / 1024
+            )} KB)`
+          );
+        }
+
+        if (!isStoppingAllRef.current && streamRef.current) {
+          await startSegmentRecorder(streamRef.current);
+        } else {
+          const fullBlob = new Blob(segmentBlobsRef.current, {
+            type: recorder.mimeType || "audio/webm",
+          });
+
+          if (fullBlob.size > 0) {
+            const url = URL.createObjectURL(fullBlob);
+            audioUrlRef.current = url;
+
+            if (playerRef.current) {
+              playerRef.current.src = url;
+            }
+          }
+
+          setRecordStatus("정지");
+          log(
+            `녹음 종료. 세그먼트 수: ${segmentBlobsRef.current.length}개`
+          );
+
+          await uploadForAnalysis();
+        }
+      } catch (error) {
+        console.error(error);
+        setTranscript("녹음 종료 후 처리 중 오류가 발생했습니다.");
+        setSpeakerText("");
+        setSpeakerError("녹음 종료 후 처리 중 오류가 발생했습니다.");
+        setGradeResult(null);
+        setGradeError("");
+        setIsTranscribing(false);
+        setIsSeparating(false);
+        setIsGrading(false);
+      }
+    };
+
+    recorder.start();
+    setRecordStatus("녹음 중");
+
+    clearSegmentTimer();
+    segmentTimerRef.current = setTimeout(() => {
+      if (recorder.state === "recording") {
+        recorder.stop();
+      }
+    }, SEGMENT_MS);
   }
 
   async function startRecording() {
@@ -146,6 +250,10 @@ export default function Home() {
       setIsGrading(false);
       setRemainingSeconds(12 * 60);
 
+      segmentBlobsRef.current = [];
+      currentChunkPartsRef.current = [];
+      isStoppingAllRef.current = false;
+
       if (audioUrlRef.current) {
         URL.revokeObjectURL(audioUrlRef.current);
         audioUrlRef.current = null;
@@ -158,76 +266,9 @@ export default function Home() {
       }
 
       const stream = await getMicrophone();
-      const mimeType = pickMimeType();
+      await startSegmentRecorder(stream);
 
-      chunksRef.current = [];
-
-      const recorder = mimeType
-        ? new MediaRecorder(stream, {
-            mimeType,
-            audioBitsPerSecond: 24000,
-          })
-        : new MediaRecorder(stream, {
-            audioBitsPerSecond: 24000,
-          });
-
-      recorderRef.current = recorder;
-
-      recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          chunksRef.current.push(event.data);
-          log(`청크 저장 완료 (${chunksRef.current.length}개)`);
-        }
-      };
-
-      recorder.onerror = (event) => {
-        console.error("Recorder error:", event);
-        setRecordStatus("오류");
-        log("녹음 중 오류 발생");
-      };
-
-      recorder.onstop = async () => {
-        try {
-          const fullBlob = new Blob(chunksRef.current, {
-            type: recorder.mimeType || "audio/webm",
-          });
-
-          if (fullBlob.size === 0) {
-            setTranscript("녹음 파일이 비어 있습니다.");
-            log("녹음 종료. 파일 크기: 0 KB");
-            setRecordStatus("정지");
-            return;
-          }
-
-          const url = URL.createObjectURL(fullBlob);
-          audioUrlRef.current = url;
-
-          if (playerRef.current) {
-            playerRef.current.src = url;
-          }
-
-          setRecordStatus("정지");
-          log(
-            `녹음 종료. 전체 파일 크기: ${Math.round(fullBlob.size / 1024)} KB, 청크 수: ${chunksRef.current.length}개`
-          );
-
-          await uploadForAnalysis();
-        } catch (error) {
-          console.error(error);
-          setTranscript("녹음 종료 후 처리 중 오류가 발생했습니다.");
-          setSpeakerText("");
-          setSpeakerError("녹음 종료 후 처리 중 오류가 발생했습니다.");
-          setGradeResult(null);
-          setGradeError("");
-          setIsTranscribing(false);
-          setIsSeparating(false);
-          setIsGrading(false);
-        }
-      };
-
-      recorder.start(CHUNK_MS);
-      setRecordStatus("녹음 중");
-      log("녹음 시작 (1분 단위 청크 저장)");
+      log("녹음 시작 (1분마다 완성 파일로 분할 저장)");
       startCountdown();
     } catch (error) {
       console.error(error);
@@ -238,7 +279,8 @@ export default function Home() {
   }
 
   function stopRecording() {
-    clearTimer();
+    clearAllTimers();
+    isStoppingAllRef.current = true;
 
     const recorder = recorderRef.current;
     if (recorder && recorder.state === "recording") {
@@ -247,7 +289,8 @@ export default function Home() {
   }
 
   async function resetAll() {
-    clearTimer();
+    clearAllTimers();
+    isStoppingAllRef.current = true;
 
     const recorder = recorderRef.current;
     if (recorder && recorder.state === "recording") {
@@ -255,7 +298,8 @@ export default function Home() {
     }
 
     recorderRef.current = null;
-    chunksRef.current = [];
+    currentChunkPartsRef.current = [];
+    segmentBlobsRef.current = [];
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
@@ -287,12 +331,12 @@ export default function Home() {
     setLogText("로그가 여기에 표시됩니다.");
   }
 
-  async function transcribeSingleChunk(chunk: Blob, index: number, total: number) {
+  async function transcribeSingleSegment(segment: Blob, index: number, total: number) {
     const formData = new FormData();
-    const ext = chunk.type.includes("mp4") ? "mp4" : "webm";
-    formData.append("file", chunk, `recording-part-${index + 1}.${ext}`);
+    const ext = segment.type.includes("mp4") ? "mp4" : "webm";
+    formData.append("file", segment, `segment-${index + 1}.${ext}`);
 
-    log(`전사 청크 ${index + 1}/${total} 업로드 시작`);
+    log(`전사 세그먼트 ${index + 1}/${total} 업로드 시작`);
 
     const response = await fetch("/api/transcribe", {
       method: "POST",
@@ -302,38 +346,30 @@ export default function Home() {
     const data = await response.json();
 
     if (!response.ok) {
-      throw new Error(
-        data?.error || `전사 실패 (청크 ${index + 1}/${total})`
-      );
+      throw new Error(data?.error || `전사 실패 (세그먼트 ${index + 1}/${total})`);
     }
 
-    const text =
-      typeof data?.text === "string" && data.text.trim()
-        ? data.text.trim()
-        : "";
+    log(`전사 세그먼트 ${index + 1}/${total} 완료`);
 
-    log(`전사 청크 ${index + 1}/${total} 완료`);
-    return text;
+    return typeof data?.text === "string" ? data.text.trim() : "";
   }
 
-  async function transcribeAllChunks() {
-    const chunkList = chunksRef.current.filter((chunk) => chunk.size > 0);
+  async function transcribeAllSegments() {
+    const segments = segmentBlobsRef.current.filter((blob) => blob.size > 0);
 
-    if (chunkList.length === 0) {
-      throw new Error("전사할 청크가 없습니다.");
+    if (segments.length === 0) {
+      throw new Error("전사할 세그먼트가 없습니다.");
     }
 
-    const results: string[] = [];
+    const texts: string[] = [];
 
-    for (let i = 0; i < chunkList.length; i += 1) {
-      setTranscript(`전사 중... (${i + 1}/${chunkList.length})`);
-      const text = await transcribeSingleChunk(chunkList[i], i, chunkList.length);
-      if (text) {
-        results.push(text);
-      }
+    for (let i = 0; i < segments.length; i += 1) {
+      setTranscript(`전사 중... (${i + 1}/${segments.length})`);
+      const text = await transcribeSingleSegment(segments[i], i, segments.length);
+      if (text) texts.push(text);
     }
 
-    return results.join("\n").trim();
+    return texts.join("\n").trim();
   }
 
   async function uploadForAnalysis() {
@@ -347,9 +383,9 @@ export default function Home() {
       setGradeResult(null);
       setGradeError("");
 
-      const transcriptText = await transcribeAllChunks();
-
+      const transcriptText = await transcribeAllSegments();
       const finalTranscript = transcriptText || "(텍스트 없음)";
+
       setTranscript(finalTranscript);
       log("전체 전사 완료");
       setIsTranscribing(false);
@@ -373,8 +409,7 @@ export default function Home() {
         }
 
         mergedText =
-          typeof speakerData?.mergedText === "string" &&
-          speakerData.mergedText.trim()
+          typeof speakerData?.mergedText === "string" && speakerData.mergedText.trim()
             ? speakerData.mergedText
             : "(화자 분리 결과 없음)";
 
@@ -446,7 +481,7 @@ export default function Home() {
 
   useEffect(() => {
     return () => {
-      clearTimer();
+      clearAllTimers();
 
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
@@ -491,15 +526,14 @@ export default function Home() {
             marginBottom: 8,
           }}
         >
-          5차 테스트 버전
+          6차 테스트 버전
         </div>
 
         <h1 style={{ margin: "0 0 8px", fontSize: 28 }}>
           CPX 음성 전사 + 화자 분리 + AI 채점
         </h1>
         <p style={{ margin: "0 0 20px", color: "#4b5563", lineHeight: 1.6 }}>
-          ON을 누르면 녹음을 시작하고, STOP 후 1분 단위로 전사한 뒤 화자 분리와
-          AI 채점을 진행합니다.
+          ON을 누르면 녹음을 시작하고, STOP 후 1분 단위 완성 파일로 전사한 뒤 화자 분리와 AI 채점을 진행합니다.
         </p>
 
         <div
@@ -516,7 +550,7 @@ export default function Home() {
           <div>전사 상태: {isTranscribing ? "진행 중" : "대기"}</div>
           <div>화자 분리 상태: {isSeparating ? "진행 중" : "대기"}</div>
           <div>AI 채점 상태: {isGrading ? "진행 중" : "대기"}</div>
-          <div>저장된 청크 수: {chunksRef.current.length}개</div>
+          <div>저장된 세그먼트 수: {segmentBlobsRef.current.length}개</div>
         </div>
 
         <div
@@ -551,9 +585,7 @@ export default function Home() {
               background: "#2563eb",
               color: "white",
               cursor:
-                isTranscribing || isSeparating || isGrading
-                  ? "not-allowed"
-                  : "pointer",
+                isTranscribing || isSeparating || isGrading ? "not-allowed" : "pointer",
               opacity: isTranscribing || isSeparating || isGrading ? 0.6 : 1,
             }}
           >
@@ -626,9 +658,7 @@ export default function Home() {
           }}
         >
           <div style={{ fontWeight: 700, marginBottom: 8 }}>전사 결과</div>
-          {isTranscribing
-            ? transcript || "전사 중..."
-            : transcript || "여기에 전사 결과가 표시됩니다."}
+          {isTranscribing ? transcript || "전사 중..." : transcript || "여기에 전사 결과가 표시됩니다."}
         </div>
 
         <div
@@ -646,9 +676,7 @@ export default function Home() {
           <div style={{ fontWeight: 700, marginBottom: 8 }}>화자 분리 결과</div>
           {isSeparating
             ? "화자 분리 중..."
-            : speakerError ||
-              speakerText ||
-              "여기에 의사/환자 화자 분리 결과가 표시됩니다."}
+            : speakerError || speakerText || "여기에 의사/환자 화자 분리 결과가 표시됩니다."}
         </div>
 
         <div
@@ -676,50 +704,11 @@ export default function Home() {
               <div>환자교육: {gradeResult.scores.education} / 20</div>
               <div>임상예절: {gradeResult.scores.etiquette} / 20</div>
               <div>환자의사관계: {gradeResult.scores.relationship} / 20</div>
-
               <div style={{ marginTop: 10, fontWeight: 800 }}>
                 총점: {gradeResult.scores.total} / 100
               </div>
-
               <div style={{ marginTop: 14 }}>
-                <div>
-                  <b>병력청취 피드백</b>
-                </div>
-                <div>{gradeResult.feedback.history}</div>
-              </div>
-
-              <div style={{ marginTop: 10 }}>
-                <div>
-                  <b>신체진찰 피드백</b>
-                </div>
-                <div>{gradeResult.feedback.physical_exam}</div>
-              </div>
-
-              <div style={{ marginTop: 10 }}>
-                <div>
-                  <b>환자교육 피드백</b>
-                </div>
-                <div>{gradeResult.feedback.education}</div>
-              </div>
-
-              <div style={{ marginTop: 10 }}>
-                <div>
-                  <b>임상예절 피드백</b>
-                </div>
-                <div>{gradeResult.feedback.etiquette}</div>
-              </div>
-
-              <div style={{ marginTop: 10 }}>
-                <div>
-                  <b>환자의사관계 피드백</b>
-                </div>
-                <div>{gradeResult.feedback.relationship}</div>
-              </div>
-
-              <div style={{ marginTop: 14 }}>
-                <div>
-                  <b>총평</b>
-                </div>
+                <b>총평</b>
                 <div>{gradeResult.feedback.overall}</div>
               </div>
             </>
