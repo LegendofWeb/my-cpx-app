@@ -2,14 +2,37 @@
 
 import { useEffect, useRef, useState } from "react";
 
+type GradeResult = {
+  scores: {
+    history: number;
+    physical_exam: number;
+    education: number;
+    etiquette: number;
+    relationship: number;
+    total: number;
+  };
+  feedback: {
+    history: string;
+    physical_exam: string;
+    education: string;
+    etiquette: string;
+    relationship: string;
+    overall: string;
+  };
+  mergedText: string;
+};
+
 export default function Home() {
   const [micStatus, setMicStatus] = useState("대기 중");
   const [recordStatus, setRecordStatus] = useState("정지");
   const [transcript, setTranscript] = useState("");
   const [speakerText, setSpeakerText] = useState("");
   const [speakerError, setSpeakerError] = useState("");
+  const [gradeResult, setGradeResult] = useState<GradeResult | null>(null);
+  const [gradeError, setGradeError] = useState("");
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSeparating, setIsSeparating] = useState(false);
+  const [isGrading, setIsGrading] = useState(false);
   const [remainingSeconds, setRemainingSeconds] = useState(12 * 60);
   const [logText, setLogText] = useState("로그가 여기에 표시됩니다.");
 
@@ -114,8 +137,11 @@ export default function Home() {
       setTranscript("");
       setSpeakerText("");
       setSpeakerError("");
+      setGradeResult(null);
+      setGradeError("");
       setIsTranscribing(false);
       setIsSeparating(false);
+      setIsGrading(false);
       setRemainingSeconds(12 * 60);
 
       if (audioUrlRef.current) {
@@ -175,14 +201,17 @@ export default function Home() {
           setRecordStatus("정지");
           log(`녹음 종료. 파일 크기: ${Math.round(blob.size / 1024)} KB`);
 
-          await uploadForTranscription(blob);
+          await uploadForAnalysis(blob);
         } catch (error) {
           console.error(error);
           setTranscript("녹음 종료 후 처리 중 오류가 발생했습니다.");
           setSpeakerText("");
           setSpeakerError("녹음 종료 후 처리 중 오류가 발생했습니다.");
+          setGradeResult(null);
+          setGradeError("");
           setIsTranscribing(false);
           setIsSeparating(false);
+          setIsGrading(false);
         }
       };
 
@@ -239,42 +268,50 @@ export default function Home() {
     setTranscript("");
     setSpeakerText("");
     setSpeakerError("");
+    setGradeResult(null);
+    setGradeError("");
     setIsTranscribing(false);
     setIsSeparating(false);
+    setIsGrading(false);
     setRemainingSeconds(12 * 60);
     setLogText("로그가 여기에 표시됩니다.");
   }
 
-  async function uploadForTranscription(blob: Blob) {
+  async function uploadForAnalysis(blob: Blob) {
     try {
       setIsTranscribing(true);
       setIsSeparating(false);
+      setIsGrading(false);
       setTranscript("전사 중...");
       setSpeakerText("");
       setSpeakerError("");
+      setGradeResult(null);
+      setGradeError("");
 
       const formData = new FormData();
       formData.append("file", blob, "recording.webm");
 
-      const response = await fetch("/api/transcribe", {
+      const transcribeRes = await fetch("/api/transcribe", {
         method: "POST",
         body: formData,
       });
 
-      const data = await response.json();
+      const transcribeData = await transcribeRes.json();
 
-      if (!response.ok) {
-        throw new Error(data?.error || "전사 실패");
+      if (!transcribeRes.ok) {
+        throw new Error(transcribeData?.error || "전사 실패");
       }
 
       const transcriptText =
-        typeof data?.text === "string" && data.text.trim()
-          ? data.text
+        typeof transcribeData?.text === "string" && transcribeData.text.trim()
+          ? transcribeData.text
           : "(텍스트 없음)";
 
       setTranscript(transcriptText);
       log("전사 완료");
       setIsTranscribing(false);
+
+      let mergedText = "";
 
       try {
         setIsSeparating(true);
@@ -292,7 +329,7 @@ export default function Home() {
           throw new Error(speakerData?.error || "화자 분리 실패");
         }
 
-        const mergedText =
+        mergedText =
           typeof speakerData?.mergedText === "string" &&
           speakerData.mergedText.trim()
             ? speakerData.mergedText
@@ -310,8 +347,41 @@ export default function Home() {
             : "화자 분리 중 오류가 발생했습니다."
         );
         log("화자 분리 실패");
+        return;
       } finally {
         setIsSeparating(false);
+      }
+
+      try {
+        setIsGrading(true);
+        log("AI 채점 시작");
+
+        const gradeRes = await fetch("/api/grade", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mergedText }),
+        });
+
+        const gradeData = await gradeRes.json();
+
+        if (!gradeRes.ok) {
+          throw new Error(gradeData?.error || "채점 실패");
+        }
+
+        setGradeResult(gradeData);
+        setGradeError("");
+        log("AI 채점 완료");
+      } catch (error) {
+        console.error("grade error:", error);
+        setGradeResult(null);
+        setGradeError(
+          error instanceof Error
+            ? `AI 채점 실패: ${error.message}`
+            : "AI 채점 중 오류가 발생했습니다."
+        );
+        log("AI 채점 실패");
+      } finally {
+        setIsGrading(false);
       }
     } catch (error) {
       console.error("transcribe error:", error);
@@ -322,8 +392,11 @@ export default function Home() {
       );
       setSpeakerText("");
       setSpeakerError("");
+      setGradeResult(null);
+      setGradeError("");
       setIsTranscribing(false);
       setIsSeparating(false);
+      setIsGrading(false);
       log("전사 실패");
     }
   }
@@ -375,15 +448,15 @@ export default function Home() {
             marginBottom: 8,
           }}
         >
-          3차 테스트 버전
+          4차 테스트 버전
         </div>
 
         <h1 style={{ margin: "0 0 8px", fontSize: 28 }}>
-          CPX 음성 전사 + 화자 분리 테스트
+          CPX 음성 전사 + 화자 분리 + AI 채점
         </h1>
         <p style={{ margin: "0 0 20px", color: "#4b5563", lineHeight: 1.6 }}>
-          ON을 누르면 녹음을 시작하고, STOP 후 OpenAI로 전사한 뒤 의사/환자
-          화자를 분리합니다.
+          ON을 누르면 녹음을 시작하고, STOP 후 전사 → 화자 분리 → AI 채점을
+          순서대로 진행합니다.
         </p>
 
         <div
@@ -399,6 +472,7 @@ export default function Home() {
           <div>녹음 상태: {recordStatus}</div>
           <div>전사 상태: {isTranscribing ? "진행 중" : "대기"}</div>
           <div>화자 분리 상태: {isSeparating ? "진행 중" : "대기"}</div>
+          <div>AI 채점 상태: {isGrading ? "진행 중" : "대기"}</div>
         </div>
 
         <div
@@ -423,7 +497,7 @@ export default function Home() {
         >
           <button
             onClick={startRecording}
-            disabled={isTranscribing || isSeparating}
+            disabled={isTranscribing || isSeparating || isGrading}
             style={{
               border: "none",
               borderRadius: 14,
@@ -433,8 +507,10 @@ export default function Home() {
               background: "#2563eb",
               color: "white",
               cursor:
-                isTranscribing || isSeparating ? "not-allowed" : "pointer",
-              opacity: isTranscribing || isSeparating ? 0.6 : 1,
+                isTranscribing || isSeparating || isGrading
+                  ? "not-allowed"
+                  : "pointer",
+              opacity: isTranscribing || isSeparating || isGrading ? 0.6 : 1,
             }}
           >
             ON
@@ -506,7 +582,9 @@ export default function Home() {
           }}
         >
           <div style={{ fontWeight: 700, marginBottom: 8 }}>전사 결과</div>
-          {isTranscribing ? "전사 중..." : transcript || "여기에 전사 결과가 표시됩니다."}
+          {isTranscribing
+            ? "전사 중..."
+            : transcript || "여기에 전사 결과가 표시됩니다."}
         </div>
 
         <div
@@ -527,6 +605,83 @@ export default function Home() {
             : speakerError ||
               speakerText ||
               "여기에 의사/환자 화자 분리 결과가 표시됩니다."}
+        </div>
+
+        <div
+          style={{
+            marginTop: 20,
+            padding: 16,
+            borderRadius: 14,
+            background: "#eef2ff",
+            border: "1px solid #c7d2fe",
+            minHeight: 220,
+            whiteSpace: "pre-wrap",
+            lineHeight: 1.7,
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>AI 채점 결과</div>
+
+          {isGrading ? (
+            "AI 채점 중..."
+          ) : gradeError ? (
+            gradeError
+          ) : gradeResult ? (
+            <>
+              <div>병력청취: {gradeResult.scores.history} / 20</div>
+              <div>신체진찰: {gradeResult.scores.physical_exam} / 20</div>
+              <div>환자교육: {gradeResult.scores.education} / 20</div>
+              <div>임상예절: {gradeResult.scores.etiquette} / 20</div>
+              <div>환자의사관계: {gradeResult.scores.relationship} / 20</div>
+
+              <div style={{ marginTop: 10, fontWeight: 800 }}>
+                총점: {gradeResult.scores.total} / 100
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                <div>
+                  <b>병력청취 피드백</b>
+                </div>
+                <div>{gradeResult.feedback.history}</div>
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+                <div>
+                  <b>신체진찰 피드백</b>
+                </div>
+                <div>{gradeResult.feedback.physical_exam}</div>
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+                <div>
+                  <b>환자교육 피드백</b>
+                </div>
+                <div>{gradeResult.feedback.education}</div>
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+                <div>
+                  <b>임상예절 피드백</b>
+                </div>
+                <div>{gradeResult.feedback.etiquette}</div>
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+                <div>
+                  <b>환자의사관계 피드백</b>
+                </div>
+                <div>{gradeResult.feedback.relationship}</div>
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                <div>
+                  <b>총평</b>
+                </div>
+                <div>{gradeResult.feedback.overall}</div>
+              </div>
+            </>
+          ) : (
+            "여기에 AI 채점 결과가 표시됩니다."
+          )}
         </div>
       </div>
     </main>
