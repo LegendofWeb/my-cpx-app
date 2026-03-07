@@ -65,10 +65,17 @@ export async function POST(req: NextRequest) {
 
     await writeFile(tempPath, bytes);
 
-    const transcription = await client.audio.transcriptions.create({
-      file: createReadStream(tempPath),
-      model: "gpt-4o-mini-transcribe",
-    });
+  const transcription = await client.audio.transcriptions.create({
+  file: createReadStream(tempPath),
+  model: "gpt-4o-transcribe",
+  prompt:
+    "This is a Korean CPX medical conversation between a doctor and a patient. " +
+    "Please accurately transcribe Korean medical interview language, common symptoms, " +
+    "doctor greetings, patient answers, and clinical expressions. " +
+    "Likely terms may include 숨이 차다, 호흡곤란, 두근거림, 흉통, 두통, 일상생활, 기침, 가래, " +
+    "일상생활, 감기, 고혈압, 당뇨, 천식, 약물, 피 묽게 하는 약, 직업",
+    "Patient name is 김한중, age is 48"
+});
 
     return NextResponse.json({
       text: transcription.text ?? "",

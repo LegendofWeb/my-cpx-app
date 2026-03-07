@@ -169,10 +169,10 @@ export default function Home() {
     const recorder = mimeType
       ? new MediaRecorder(stream, {
           mimeType,
-          audioBitsPerSecond: 24000,
+          audioBitsPerSecond: 64000,
         })
       : new MediaRecorder(stream, {
-          audioBitsPerSecond: 24000,
+          audioBitsPerSecond: 64000,
         });
 
     recorderRef.current = recorder;
