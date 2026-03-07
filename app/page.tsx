@@ -5,19 +5,37 @@ import { useEffect, useRef, useState } from "react";
 type GradeResult = {
   scores: {
     history: number;
-    physical_exam: number;
     education: number;
     etiquette: number;
     relationship: number;
     total: number;
+    max_total: number;
   };
   feedback: {
-    history: string;
-    physical_exam: string;
-    education: string;
-    etiquette: string;
-    relationship: string;
+    history: {
+      strengths: string;
+      missed: string;
+      summary: string;
+    };
+    education: {
+      strengths: string;
+      missed: string;
+      summary: string;
+    };
+    etiquette: {
+      strengths: string;
+      missed: string;
+      summary: string;
+    };
+    relationship: {
+      strengths: string;
+      missed: string;
+      summary: string;
+    };
     overall: string;
+  };
+  manual_scores: {
+    physical_exam: number | null;
   };
   mergedText: string;
 };
@@ -203,9 +221,7 @@ export default function Home() {
           }
 
           setRecordStatus("정지");
-          log(
-            `녹음 종료. 세그먼트 수: ${segmentBlobsRef.current.length}개`
-          );
+          log(`녹음 종료. 세그먼트 수: ${segmentBlobsRef.current.length}개`);
 
           await uploadForAnalysis();
         }
@@ -331,7 +347,11 @@ export default function Home() {
     setLogText("로그가 여기에 표시됩니다.");
   }
 
-  async function transcribeSingleSegment(segment: Blob, index: number, total: number) {
+  async function transcribeSingleSegment(
+    segment: Blob,
+    index: number,
+    total: number
+  ) {
     const formData = new FormData();
     const ext = segment.type.includes("mp4") ? "mp4" : "webm";
     formData.append("file", segment, `segment-${index + 1}.${ext}`);
@@ -409,7 +429,8 @@ export default function Home() {
         }
 
         mergedText =
-          typeof speakerData?.mergedText === "string" && speakerData.mergedText.trim()
+          typeof speakerData?.mergedText === "string" &&
+          speakerData.mergedText.trim()
             ? speakerData.mergedText
             : "(화자 분리 결과 없음)";
 
@@ -479,6 +500,48 @@ export default function Home() {
     }
   }
 
+  function renderFeedbackBlock(
+    title: string,
+    score: number,
+    maxScore: number,
+    feedback: {
+      strengths: string;
+      missed: string;
+      summary: string;
+    }
+  ) {
+    return (
+      <div
+        style={{
+          marginTop: 14,
+          padding: 14,
+          borderRadius: 12,
+          background: "#ffffff",
+          border: "1px solid #c7d2fe",
+        }}
+      >
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>
+          {title}: {score} / {maxScore}
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <b>잘한 점</b>
+          <div>{feedback.strengths || "-"}</div>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <b>빠뜨리거나 부족한 점</b>
+          <div>{feedback.missed || "-"}</div>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <b>한줄 피드백</b>
+          <div>{feedback.summary || "-"}</div>
+        </div>
+      </div>
+    );
+  }
+
   useEffect(() => {
     return () => {
       clearAllTimers();
@@ -506,7 +569,7 @@ export default function Home() {
     >
       <div
         style={{
-          maxWidth: 760,
+          maxWidth: 820,
           margin: "0 auto",
           background: "white",
           borderRadius: 20,
@@ -526,14 +589,15 @@ export default function Home() {
             marginBottom: 8,
           }}
         >
-          6차 테스트 버전
+          7차 테스트 버전
         </div>
 
         <h1 style={{ margin: "0 0 8px", fontSize: 28 }}>
           CPX 음성 전사 + 화자 분리 + AI 채점
         </h1>
         <p style={{ margin: "0 0 20px", color: "#4b5563", lineHeight: 1.6 }}>
-          ON을 누르면 녹음을 시작하고, STOP 후 1분 단위 완성 파일로 전사한 뒤 화자 분리와 AI 채점을 진행합니다.
+          AI는 병력청취, 환자교육, 임상예절, 환자의사관계만 평가합니다.
+          신체진찰은 제외되어 총점은 75점 만점입니다.
         </p>
 
         <div
@@ -585,7 +649,9 @@ export default function Home() {
               background: "#2563eb",
               color: "white",
               cursor:
-                isTranscribing || isSeparating || isGrading ? "not-allowed" : "pointer",
+                isTranscribing || isSeparating || isGrading
+                  ? "not-allowed"
+                  : "pointer",
               opacity: isTranscribing || isSeparating || isGrading ? 0.6 : 1,
             }}
           >
@@ -658,7 +724,9 @@ export default function Home() {
           }}
         >
           <div style={{ fontWeight: 700, marginBottom: 8 }}>전사 결과</div>
-          {isTranscribing ? transcript || "전사 중..." : transcript || "여기에 전사 결과가 표시됩니다."}
+          {isTranscribing
+            ? transcript || "전사 중..."
+            : transcript || "여기에 전사 결과가 표시됩니다."}
         </div>
 
         <div
@@ -676,7 +744,9 @@ export default function Home() {
           <div style={{ fontWeight: 700, marginBottom: 8 }}>화자 분리 결과</div>
           {isSeparating
             ? "화자 분리 중..."
-            : speakerError || speakerText || "여기에 의사/환자 화자 분리 결과가 표시됩니다."}
+            : speakerError ||
+              speakerText ||
+              "여기에 의사/환자 화자 분리 결과가 표시됩니다."}
         </div>
 
         <div
@@ -686,7 +756,7 @@ export default function Home() {
             borderRadius: 14,
             background: "#eef2ff",
             border: "1px solid #c7d2fe",
-            minHeight: 220,
+            minHeight: 260,
             whiteSpace: "pre-wrap",
             lineHeight: 1.7,
           }}
@@ -699,17 +769,53 @@ export default function Home() {
             gradeError
           ) : gradeResult ? (
             <>
-              <div>병력청취: {gradeResult.scores.history} / 20</div>
-              <div>신체진찰: {gradeResult.scores.physical_exam} / 20</div>
-              <div>환자교육: {gradeResult.scores.education} / 20</div>
-              <div>임상예절: {gradeResult.scores.etiquette} / 20</div>
-              <div>환자의사관계: {gradeResult.scores.relationship} / 20</div>
-              <div style={{ marginTop: 10, fontWeight: 800 }}>
-                총점: {gradeResult.scores.total} / 100
+              <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 8 }}>
+                총점: {gradeResult.scores.total} / {gradeResult.scores.max_total}
               </div>
-              <div style={{ marginTop: 14 }}>
-                <b>총평</b>
-                <div>{gradeResult.feedback.overall}</div>
+
+              <div style={{ color: "#4b5563", marginBottom: 12 }}>
+                신체진찰은 AI 채점에서 제외됨 (직접 채점 예정)
+              </div>
+
+              {renderFeedbackBlock(
+                "병력청취",
+                gradeResult.scores.history,
+                20,
+                gradeResult.feedback.history
+              )}
+
+              {renderFeedbackBlock(
+                "환자교육",
+                gradeResult.scores.education,
+                20,
+                gradeResult.feedback.education
+              )}
+
+              {renderFeedbackBlock(
+                "임상예절",
+                gradeResult.scores.etiquette,
+                20,
+                gradeResult.feedback.etiquette
+              )}
+
+              {renderFeedbackBlock(
+                "환자의사관계",
+                gradeResult.scores.relationship,
+                15,
+                gradeResult.feedback.relationship
+              )}
+
+              <div
+                style={{
+                  marginTop: 16,
+                  padding: 14,
+                  borderRadius: 12,
+                  background: "#ffffff",
+                  border: "1px solid #c7d2fe",
+                }}
+              >
+                <div style={{ fontWeight: 800, marginBottom: 8 }}>전체 피드백</div>
+                <div>{gradeResult.feedback.overall || "-"}</div>
               </div>
             </>
           ) : (
